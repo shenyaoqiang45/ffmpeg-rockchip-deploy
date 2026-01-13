@@ -172,6 +172,9 @@ size_t encoder_max_output_size(const NV12MJPEGEncoder* encoder) {
 int encoder_encode_to_buffer(NV12MJPEGEncoder* encoder, const uint8_t* nv12_data,
                               uint8_t* out_buffer, size_t buffer_size, size_t* out_size) {
     int ret;
+    uint64_t t_start, t_end, t_total_start;
+    
+    t_total_start = get_time_ns();
     
     // Validate parameters
     if (!encoder || !nv12_data || !out_buffer || !out_size) {
@@ -179,45 +182,72 @@ int encoder_encode_to_buffer(NV12MJPEGEncoder* encoder, const uint8_t* nv12_data
     }
     
     // Make frame writable (in case it was used before)
+    t_start = get_time_ns();
     ret = av_frame_make_writable(encoder->frame);
+    t_end = get_time_ns();
+    fprintf(stderr, "[Perf] av_frame_make_writable: %.3f ms\n", (t_end - t_start) / 1000000.0);
     if (ret < 0) {
         fprintf(stderr, "Failed to make frame writable: %s\n", av_err2str(ret));
         return ret;
     }
     
-    // Print encoder configuration
-    fprintf(stderr, "[Encoder] Quality: QP=%d, Y linesize: %d, UV linesize: %d\n",
-            encoder->quality, encoder->frame->linesize[0], encoder->frame->linesize[1]);
+    // Print encoder configuration and buffer info
+    fprintf(stderr, "[Encoder] Quality: QP=%d, Resolution: %dx%d\n", 
+            encoder->quality, encoder->width, encoder->height);
+    fprintf(stderr, "[Encoder] Y linesize: %d (width: %d, padding: %d bytes)\n",
+            encoder->frame->linesize[0], encoder->width, 
+            encoder->frame->linesize[0] - encoder->width);
+    fprintf(stderr, "[Encoder] UV linesize: %d (width: %d, padding: %d bytes)\n",
+            encoder->frame->linesize[1], encoder->width,
+            encoder->frame->linesize[1] - encoder->width);
     
-    // Copy NV12 data to frame
+    // Copy NV12 data to frame using bulk copy
     // Y plane
     const uint8_t* src_y = nv12_data;
     uint8_t* dst_y = encoder->frame->data[0];
-    for (int y = 0; y < encoder->height; y++) {
-        memcpy(dst_y + y * encoder->frame->linesize[0], src_y + y * encoder->width, encoder->width);
-    }
+    fprintf(stderr, "[Encoder] Y plane: bulk copy %d bytes (linesize=%d, width=%d)\n", 
+            encoder->width * encoder->height, encoder->frame->linesize[0], encoder->width);
+    t_start = get_time_ns();
+    memcpy(dst_y, src_y, encoder->width * encoder->height);
+    t_end = get_time_ns();
+    fprintf(stderr, "[Perf] Y plane memcpy: %.3f ms (%.2f GB/s)\n", 
+            (t_end - t_start) / 1000000.0,
+            (encoder->width * encoder->height) / ((t_end - t_start) / 1e9) / 1e9);
     
     // UV plane
     const uint8_t* src_uv = nv12_data + encoder->width * encoder->height;
     uint8_t* dst_uv = encoder->frame->data[1];
-    for (int y = 0; y < encoder->height / 2; y++) {
-        memcpy(dst_uv + y * encoder->frame->linesize[1], src_uv + y * encoder->width, encoder->width);
-    }
+    fprintf(stderr, "[Encoder] UV plane: bulk copy %d bytes (linesize=%d, width=%d)\n",
+            encoder->width * encoder->height / 2, encoder->frame->linesize[1], encoder->width);
+    t_start = get_time_ns();
+    memcpy(dst_uv, src_uv, encoder->width * encoder->height / 2);
+    t_end = get_time_ns();
+    fprintf(stderr, "[Perf] UV plane memcpy: %.3f ms (%.2f GB/s)\n",
+            (t_end - t_start) / 1000000.0,
+            (encoder->width * encoder->height / 2) / ((t_end - t_start) / 1e9) / 1e9);
     
     // Update PTS
     encoder->frame->pts = encoder->frame_counter++;
     
     // Send frame to encoder
+    t_start = get_time_ns();
     ret = avcodec_send_frame(encoder->codec_ctx, encoder->frame);
+    t_end = get_time_ns();
+    fprintf(stderr, "[Perf] avcodec_send_frame: %.3f ms\n", (t_end - t_start) / 1000000.0);
     if (ret < 0) {
         fprintf(stderr, "Error sending frame to encoder: %s\n", av_err2str(ret));
         return ret;
     }
     
     // Receive encoded packet
+    t_start = get_time_ns();
     ret = avcodec_receive_packet(encoder->codec_ctx, encoder->pkt);
+    t_end = get_time_ns();
+    fprintf(stderr, "[Perf] avcodec_receive_packet: %.3f ms\n", (t_end - t_start) / 1000000.0);
     if (ret == AVERROR(EAGAIN)) {
         // Hardware encoder needs flush - send NULL frame to flush
+        fprintf(stderr, "[Encoder] Flushing encoder...\n");
+        t_start = get_time_ns();
         ret = avcodec_send_frame(encoder->codec_ctx, NULL);
         if (ret < 0) {
             fprintf(stderr, "Error flushing encoder: %s\n", av_err2str(ret));
@@ -226,6 +256,8 @@ int encoder_encode_to_buffer(NV12MJPEGEncoder* encoder, const uint8_t* nv12_data
         
         // Try to receive packet again after flush
         ret = avcodec_receive_packet(encoder->codec_ctx, encoder->pkt);
+        t_end = get_time_ns();
+        fprintf(stderr, "[Perf] Flush + receive: %.3f ms\n", (t_end - t_start) / 1000000.0);
         if (ret < 0) {
             fprintf(stderr, "Error receiving packet after flush: %s\n", av_err2str(ret));
             return ret;
@@ -248,11 +280,19 @@ int encoder_encode_to_buffer(NV12MJPEGEncoder* encoder, const uint8_t* nv12_data
     }
     
     // Copy encoded data to output buffer
+    t_start = get_time_ns();
     memcpy(out_buffer, encoder->pkt->data, encoder->pkt->size);
+    t_end = get_time_ns();
+    fprintf(stderr, "[Perf] Output memcpy: %.3f ms (%d bytes)\n", 
+            (t_end - t_start) / 1000000.0, encoder->pkt->size);
     *out_size = encoder->pkt->size;
     
     // Unreference packet for next use
     av_packet_unref(encoder->pkt);
+    
+    uint64_t t_total_end = get_time_ns();
+    fprintf(stderr, "[Perf] === TOTAL encoding time: %.3f ms ===\n", 
+            (t_total_end - t_total_start) / 1000000.0);
     
     return 0;
 }
