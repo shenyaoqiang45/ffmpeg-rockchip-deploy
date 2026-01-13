@@ -144,8 +144,27 @@ int encode_nv12_to_mjpeg(const uint8_t* nv12_data, int width, int height, const 
     codec_ctx->qmin = quality;
     codec_ctx->qmax = quality;
     
-    // Set hardware encoder options (QP initial value)
+    // For high quality, use high bitrate (especially important for MJPEG)
+    // Calculate bitrate based on quality: lower quality = lower bitrate
+    // For QP=2 (high quality), use ~50-80 Mbps for 1600x1200
+    int64_t target_bitrate;
+    if (quality <= 5) {
+        target_bitrate = 80000000;  // 80 Mbps for extremely high quality
+    } else if (quality <= 10) {
+        target_bitrate = 40000000;  // 40 Mbps for high quality
+    } else if (quality <= 20) {
+        target_bitrate = 20000000;  // 20 Mbps for medium quality
+    } else {
+        target_bitrate = 10000000;  // 10 Mbps for low quality
+    }
+    codec_ctx->bit_rate = target_bitrate;
+    codec_ctx->rc_max_rate = target_bitrate;
+    codec_ctx->rc_buffer_size = target_bitrate * 2;
+    
+    // Set hardware encoder options for Rockchip MPP
     av_opt_set_int(codec_ctx->priv_data, "qp_init", quality, 0);
+    av_opt_set_int(codec_ctx->priv_data, "qp_min", quality, 0);
+    av_opt_set_int(codec_ctx->priv_data, "qp_max", quality, 0);
     
     // Open codec
     ret = avcodec_open2(codec_ctx, codec, NULL);
