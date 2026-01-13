@@ -105,13 +105,19 @@ int write_nv12_to_file(const char* filename, const uint8_t* buffer, int width, i
 // Encoding Function: NV12 → MJPEG
 // ============================================================================
 
-int encode_nv12_to_mjpeg(const uint8_t* nv12_data, int width, int height, const char* output_file) {
+int encode_nv12_to_mjpeg(const uint8_t* nv12_data, int width, int height, const char* output_file, int quality) {
     int ret;
     AVFormatContext* fmt_ctx = NULL;
     AVCodecContext* codec_ctx = NULL;
     AVStream* stream = NULL;
     AVFrame* frame = NULL;
     AVPacket* pkt = NULL;
+    
+    // Validate quality parameter
+    if (quality < 1 || quality > 31) {
+        fprintf(stderr, "Error: quality must be between 1 and 31 (got %d)\n", quality);
+        return -3;
+    }
     
     // Find hardware MJPEG encoder
     const AVCodec* codec = avcodec_find_encoder_by_name("mjpeg_rkmpp");
@@ -133,11 +139,13 @@ int encode_nv12_to_mjpeg(const uint8_t* nv12_data, int width, int height, const 
     codec_ctx->pix_fmt = AV_PIX_FMT_NV12;
     codec_ctx->time_base = (AVRational){1, 30};
     codec_ctx->framerate = (AVRational){30, 1};
-    codec_ctx->qmin = 2;
-    codec_ctx->qmax = 31;
+    
+    // Set quality control parameters
+    codec_ctx->qmin = quality;
+    codec_ctx->qmax = quality;
     
     // Set hardware encoder options (QP initial value)
-    av_opt_set_int(codec_ctx->priv_data, "qp_init", 10, 0);
+    av_opt_set_int(codec_ctx->priv_data, "qp_init", quality, 0);
     
     // Open codec
     ret = avcodec_open2(codec_ctx, codec, NULL);

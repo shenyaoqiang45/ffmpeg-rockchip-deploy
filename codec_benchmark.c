@@ -23,6 +23,7 @@
 // Constants
 #define WIDTH 1600
 #define HEIGHT 1200
+#define ENCODE_QUALITY 2  // QP=2 for high quality (1-31, lower is better)
 #define INPUT_YUV_FILE "test_data/video22_1.yuv"
 #define OUTPUT_MJPEG_FILE "output_test.mjpeg"
 #define OUTPUT_DECODED_YUV_FILE "output_decoded.yuv"
@@ -83,10 +84,10 @@ int main(void) {
     // Step 3: Encode NV12 → MJPEG
     // ========================================================================
     
-    printf("[3/5] Encoding NV12 → MJPEG (hardware encoder: mjpeg_rkmpp)...\n");
+    printf("[3/5] Encoding NV12 → MJPEG (hardware encoder: mjpeg_rkmpp, QP=%d)...\n", ENCODE_QUALITY);
     
     start_time = get_time_ns();
-    ret = encode_nv12_to_mjpeg(input_nv12, WIDTH, HEIGHT, OUTPUT_MJPEG_FILE);
+    ret = encode_nv12_to_mjpeg(input_nv12, WIDTH, HEIGHT, OUTPUT_MJPEG_FILE, ENCODE_QUALITY);
     end_time = get_time_ns();
     
     if (ret < 0) {

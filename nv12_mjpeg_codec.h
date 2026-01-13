@@ -76,14 +76,21 @@ int write_nv12_to_file(const char* filename, const uint8_t* buffer, int width, i
  * @param width Frame width in pixels
  * @param height Frame height in pixels
  * @param output_file Output MJPEG file path
+ * @param quality Quality parameter (1-31, lower is better quality)
+ *                1-5:   Extremely high quality (3-10:1 compression)
+ *                6-12:  High quality (10-20:1 compression)
+ *                13-20: Medium quality (20-40:1 compression)
+ *                21-31: Low quality (40-100:1 compression)
+ *                Recommended: 2 for industrial/medical applications
  * @return 0 on success, negative error code on failure
  * 
  * Error codes:
  *   -1: Encoder not found
  *   -2: Failed to allocate codec context
+ *   -3: Invalid quality parameter
  *   <0: FFmpeg error code (use av_err2str() to decode)
  */
-int encode_nv12_to_mjpeg(const uint8_t* nv12_data, int width, int height, const char* output_file);
+int encode_nv12_to_mjpeg(const uint8_t* nv12_data, int width, int height, const char* output_file, int quality);
 
 // ============================================================================
 // Decoding Function: MJPEG → NV12
