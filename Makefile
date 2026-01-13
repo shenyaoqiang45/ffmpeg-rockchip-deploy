@@ -18,10 +18,10 @@ FFMPEG_BUILD :=
 endif
 
 ifeq ($(strip $(FFMPEG_BUILD)),)
-CFLAGS = -Wall -Wextra -O2 $(shell pkg-config --cflags libavcodec libavformat libavutil)
-LDFLAGS = $(shell pkg-config --libs libavcodec libavformat libavutil)
+CFLAGS = -Wall -Wextra -O2 -fopenmp $(shell pkg-config --cflags libavcodec libavformat libavutil)
+LDFLAGS = -fopenmp $(shell pkg-config --libs libavcodec libavformat libavutil)
 else
-CFLAGS = -Wall -Wextra -O2 -I$(FFMPEG_BUILD)
+CFLAGS = -Wall -Wextra -O2 -fopenmp -I$(FFMPEG_BUILD)
 LDFLAGS = \
 	-L$(FFMPEG_BUILD)/libavformat \
 	-L$(FFMPEG_BUILD)/libavcodec \
@@ -29,7 +29,7 @@ LDFLAGS = \
 	-L$(FFMPEG_BUILD)/libswresample \
 	-L$(FFMPEG_BUILD)/libswscale \
 	-Wl,--start-group -lavformat -lavcodec -lavutil -lswresample -lswscale -Wl,--end-group \
-	-pthread -lm -latomic -ldl -lz -llzma -lrga -lrockchip_mpp -ldrm
+	-fopenmp -pthread -lm -latomic -ldl -lz -llzma -lrga -lrockchip_mpp -ldrm
 endif
 
 TARGET = nv12_to_mjpeg_test
