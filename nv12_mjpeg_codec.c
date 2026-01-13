@@ -48,8 +48,8 @@ NV12MJPEGEncoder* encoder_create(int width, int height, int quality) {
         fprintf(stderr, "Invalid dimensions: %dx%d\n", width, height);
         return NULL;
     }
-    if (quality < 1 || quality > 31) {
-        fprintf(stderr, "Invalid quality: %d (must be 1-31)\n", quality);
+    if (quality < 1 || quality > 99) {
+        fprintf(stderr, "Invalid quality: %d (must be 1-99)\n", quality);
         return NULL;
     }
     
@@ -105,12 +105,17 @@ NV12MJPEGEncoder* encoder_create(int width, int height, int quality) {
     fprintf(stderr, "[Encoder Config] global_quality: %d (QP * FF_QP2LAMBDA = %d * %d)\n", 
             encoder->codec_ctx->global_quality, quality, FF_QP2LAMBDA);
     
-    // 3. Very important: for some versions of RKMPP, must manually disable rate control
-    encoder->codec_ctx->bit_rate = 0;
-    encoder->codec_ctx->rc_max_rate = 0;
-    encoder->codec_ctx->rc_buffer_size = 0;
+    // 3. Set high bitrate for quality encoding
+    // For 1600x1200 @ 30fps with extremely high quality, instantaneous bitrate may exceed 100 Mbps
+    int64_t high_bitrate = 100 * 1000 * 1000; // 100 Mbps
     
-    fprintf(stderr, "[Encoder Config] Rate control: bit_rate=0, rc_max_rate=0, rc_buffer_size=0\n");
+    encoder->codec_ctx->bit_rate = high_bitrate;
+    encoder->codec_ctx->rc_max_rate = high_bitrate;
+    encoder->codec_ctx->rc_buffer_size = high_bitrate; // Allow buffer to hold one second of data
+    
+    fprintf(stderr, "[Encoder Config] Rate control: bit_rate=%ld bps (%.2f Mbps), rc_max_rate=%ld, rc_buffer_size=%ld\n",
+            encoder->codec_ctx->bit_rate, encoder->codec_ctx->bit_rate / 1000000.0,
+            encoder->codec_ctx->rc_max_rate, encoder->codec_ctx->rc_buffer_size);
     
     // Set quality bounds to match the fixed QP
     encoder->codec_ctx->qmin = quality;
@@ -252,6 +257,9 @@ int encoder_encode_to_buffer(NV12MJPEGEncoder* encoder, const uint8_t* nv12_data
     
     // Update PTS
     encoder->frame->pts = encoder->frame_counter++;
+    
+    // Set frame quality for MJPEG encoding
+    encoder->frame->quality = encoder->quality * FF_QP2LAMBDA;
     
     // Send frame to encoder
     t_start = get_time_ns();

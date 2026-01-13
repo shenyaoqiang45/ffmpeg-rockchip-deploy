@@ -27,7 +27,7 @@
 // Constants
 #define WIDTH 1600
 #define HEIGHT 1200
-#define ENCODE_QUALITY 2  // QP=2 for high quality (1-31, lower is better)
+#define ENCODE_QUALITY 98  // QP=98 for testing
 #define INPUT_YUV_FILE "test_data/video22_1.yuv"
 #define OUTPUT_MJPEG_FILE "output_test.mjpeg"
 #define OUTPUT_DECODED_YUV_FILE "output_decoded.yuv"
@@ -146,9 +146,15 @@ int main(void) {
     
     encode_time_ms = (double)(end_time - start_time) / 1000000.0;
     
-    printf("  ✓ Encoding completed\n");
-    printf("    - Time: %.3f ms\n", encode_time_ms);
-    printf("    - Output size: %zu bytes (MJPEG in memory)\n\n", mjpeg_size);
+    // Write MJPEG to file for verification
+    FILE* mjpeg_file = fopen(OUTPUT_MJPEG_FILE, "wb");
+    if (mjpeg_file) {
+        fwrite(mjpeg_buffer, 1, mjpeg_size, mjpeg_file);
+        fclose(mjpeg_file);
+        printf("  ✓ Saved MJPEG to %s for verification (%zu bytes)\n\n", OUTPUT_MJPEG_FILE, mjpeg_size);
+    } else {
+        fprintf(stderr, "Warning: Failed to write MJPEG to file\n");
+    }
     
     // ========================================================================
     // Step 5: Single-frame decode test
