@@ -19,11 +19,47 @@
 #include <libavutil/frame.h>
 #include <libavutil/opt.h>
 #include <libavutil/hwcontext.h>
+#include <libswscale/swscale.h>
 #include <errno.h>
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+static void copy_frame_to_nv12_buffer(const AVFrame* frame, uint8_t* out_nv12_buffer, int width, int height) {
+    // Copy NV12 data from frame to output buffer
+    // Y plane - use bulk copy if possible, otherwise per-row copy
+    uint8_t* dst_y = out_nv12_buffer;
+    const uint8_t* src_y = frame->data[0];
+    if (frame->linesize[0] == width) {
+        // Bulk copy - no padding
+        memcpy(dst_y, src_y, width * height);
+    } else {
+        // Per-row copy with OpenMP parallelization
+        #pragma omp parallel for if(height > 480)
+        for (int y = 0; y < height; y++) {
+            memcpy(dst_y + y * width, src_y + y * frame->linesize[0], width);
+        }
+    }
+    
+    // UV plane - use bulk copy if possible, otherwise per-row copy
+    uint8_t* dst_uv = out_nv12_buffer + width * height;
+    const uint8_t* src_uv = frame->data[1];
+    if (frame->linesize[1] == width) {
+        // Bulk copy - no padding
+        memcpy(dst_uv, src_uv, width * height / 2);
+    } else {
+        // Per-row copy with OpenMP parallelization
+        #pragma omp parallel for if(height > 480)
+        for (int y = 0; y < height / 2; y++) {
+            memcpy(dst_uv + y * width, src_uv + y * frame->linesize[1], width);
+        }
+    }
+}
 
 // ============================================================================
 // Persistent Encoder Context Implementation
@@ -356,7 +392,6 @@ struct NV12MJPEGDecoder {
     AVCodecContext* codec_ctx;    // Hardware decoder context (persistent)
     AVFrame* frame;               // Pre-allocated frame
     AVPacket* pkt;                // Pre-allocated packet
-    AVBufferRef* hw_device_ctx;   // Hardware device context for rkmpp
 };
 
 NV12MJPEGDecoder* decoder_create(void) {
@@ -369,19 +404,10 @@ NV12MJPEGDecoder* decoder_create(void) {
         return NULL;
     }
     
-    // Find hardware MJPEG decoder
-    decoder->codec = avcodec_find_decoder_by_name("mjpeg_rkmpp");
+    // Find MJPEG decoder (use software decoder for reliability)
+    decoder->codec = avcodec_find_decoder_by_name("mjpeg");
     if (!decoder->codec) {
-        fprintf(stderr, "Hardware MJPEG decoder (mjpeg_rkmpp) not found\n");
-        free(decoder);
-        return NULL;
-    }
-    
-    // Create hardware device context for rkmpp
-    ret = av_hwdevice_ctx_create(&decoder->hw_device_ctx, AV_HWDEVICE_TYPE_RKMPP,
-                                  NULL, NULL, 0);
-    if (ret < 0) {
-        fprintf(stderr, "Failed to create rkmpp hardware device context: %s\n", av_err2str(ret));
+        fprintf(stderr, "Software MJPEG decoder (mjpeg) not found\n");
         free(decoder);
         return NULL;
     }
@@ -390,22 +416,16 @@ NV12MJPEGDecoder* decoder_create(void) {
     decoder->codec_ctx = avcodec_alloc_context3(decoder->codec);
     if (!decoder->codec_ctx) {
         fprintf(stderr, "Failed to allocate codec context\n");
-        av_buffer_unref(&decoder->hw_device_ctx);
         free(decoder);
         return NULL;
     }
     
-    // Set hardware device context
-    decoder->codec_ctx->hw_device_ctx = av_buffer_ref(decoder->hw_device_ctx);
-    
-    // Note: For hardware decoders, don't pre-set pix_fmt
-    // The decoder will determine the format from the input stream
+    // Don't set pix_fmt - let decoder choose the best format
     
     // Open codec (expensive operation - done once)
     ret = avcodec_open2(decoder->codec_ctx, decoder->codec, NULL);
     if (ret < 0) {
         fprintf(stderr, "Failed to open codec: %s\n", av_err2str(ret));
-        av_buffer_unref(&decoder->hw_device_ctx);
         avcodec_free_context(&decoder->codec_ctx);
         free(decoder);
         return NULL;
@@ -486,40 +506,70 @@ int decoder_decode_from_buffer(NV12MJPEGDecoder* decoder, const uint8_t* mjpeg_d
         return -ENOMEM;
     }
     
-    // Check pixel format
+    // Check pixel format and convert if necessary
+    fprintf(stderr, "[Decoder] Decoded frame format: %d, width: %d, height: %d\n", 
+            decoder->frame->format, decoder->frame->width, decoder->frame->height);
+    
     if (decoder->frame->format != AV_PIX_FMT_NV12) {
-        fprintf(stderr, "Warning: decoded frame format is not NV12 (got %s)\n",
-                av_get_pix_fmt_name(decoder->frame->format));
-        return -EINVAL;
-    }
-    
-    // Copy NV12 data from frame to output buffer
-    // Y plane - use bulk copy if possible, otherwise per-row copy
-    uint8_t* dst_y = out_nv12_buffer;
-    const uint8_t* src_y = decoder->frame->data[0];
-    if (decoder->frame->linesize[0] == *out_width) {
-        // Bulk copy - no padding
-        memcpy(dst_y, src_y, (*out_width) * (*out_height));
-    } else {
-        // Per-row copy with OpenMP parallelization
-        #pragma omp parallel for if(*out_height > 480)
-        for (int y = 0; y < *out_height; y++) {
-            memcpy(dst_y + y * (*out_width), src_y + y * decoder->frame->linesize[0], *out_width);
+        fprintf(stderr, "Decoded frame format is %d, converting to NV12\n",
+                decoder->frame->format);
+        
+        // Create conversion context
+        struct SwsContext* sws_ctx = sws_getContext(
+            decoder->frame->width, decoder->frame->height, decoder->frame->format,
+            decoder->frame->width, decoder->frame->height, AV_PIX_FMT_NV12,
+            SWS_BILINEAR, NULL, NULL, NULL);
+        
+        if (!sws_ctx) {
+            fprintf(stderr, "Failed to create swscale context\n");
+            av_frame_unref(decoder->frame);
+            return -1;
         }
-    }
-    
-    // UV plane - use bulk copy if possible, otherwise per-row copy
-    uint8_t* dst_uv = out_nv12_buffer + (*out_width) * (*out_height);
-    const uint8_t* src_uv = decoder->frame->data[1];
-    if (decoder->frame->linesize[1] == *out_width) {
-        // Bulk copy - no padding
-        memcpy(dst_uv, src_uv, (*out_width) * (*out_height) / 2);
-    } else {
-        // Per-row copy with OpenMP parallelization
-        #pragma omp parallel for if(*out_height > 480)
-        for (int y = 0; y < (*out_height) / 2; y++) {
-            memcpy(dst_uv + y * (*out_width), src_uv + y * decoder->frame->linesize[1], *out_width);
+        
+        // Create temporary NV12 frame
+        AVFrame* nv12_frame = av_frame_alloc();
+        if (!nv12_frame) {
+            fprintf(stderr, "Failed to allocate NV12 frame\n");
+            sws_freeContext(sws_ctx);
+            av_frame_unref(decoder->frame);
+            return -1;
         }
+        
+        nv12_frame->format = AV_PIX_FMT_NV12;
+        nv12_frame->width = decoder->frame->width;
+        nv12_frame->height = decoder->frame->height;
+        
+        ret = av_frame_get_buffer(nv12_frame, 0);
+        if (ret < 0) {
+            fprintf(stderr, "Failed to allocate NV12 frame buffer: %s\n", av_err2str(ret));
+            av_frame_free(&nv12_frame);
+            sws_freeContext(sws_ctx);
+            av_frame_unref(decoder->frame);
+            return ret;
+        }
+        
+        // Perform conversion
+        ret = sws_scale(sws_ctx, 
+                       (const uint8_t* const*)decoder->frame->data, decoder->frame->linesize,
+                       0, decoder->frame->height,
+                       nv12_frame->data, nv12_frame->linesize);
+        
+        if (ret < 0) {
+            fprintf(stderr, "Failed to convert pixel format: %s\n", av_err2str(ret));
+            av_frame_free(&nv12_frame);
+            sws_freeContext(sws_ctx);
+            av_frame_unref(decoder->frame);
+            return ret;
+        }
+        
+        // Copy converted NV12 data to output buffer
+        copy_frame_to_nv12_buffer(nv12_frame, out_nv12_buffer, *out_width, *out_height);
+        
+        av_frame_free(&nv12_frame);
+        sws_freeContext(sws_ctx);
+    } else {
+        // Direct copy if already NV12
+        copy_frame_to_nv12_buffer(decoder->frame, out_nv12_buffer, *out_width, *out_height);
     }
     
     // Unreference frame for next use
@@ -541,9 +591,6 @@ void decoder_destroy(NV12MJPEGDecoder* decoder) {
     }
     if (decoder->codec_ctx) {
         avcodec_free_context(&decoder->codec_ctx);
-    }
-    if (decoder->hw_device_ctx) {
-        av_buffer_unref(&decoder->hw_device_ctx);
     }
     
     free(decoder);
