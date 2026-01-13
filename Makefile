@@ -1,8 +1,36 @@
 # Makefile for FFmpeg-Rockchip NV12 to MJPEG Test Program
 
 CC = gcc
+
+# By default, this uses the system FFmpeg development packages via pkg-config.
+# On many RK boards, the /usr/bin/ffmpeg binary may be a custom build (e.g. with rkmpp)
+# while the system -dev packages are an older FFmpeg without mjpeg_rkmpp.
+#
+# If you have a local FFmpeg build tree (e.g. ffmpeg-rockchip), build against it like:
+#   make FFMPEG_BUILD=/home/ainstec/dev/ffmpeg
+#
+# Convenience: auto-detect $HOME/dev/ffmpeg if it looks like a build output.
+FFMPEG_BUILD ?= $(HOME)/dev/ffmpeg
+
+# If auto-detected path doesn't contain built libs, fall back to system FFmpeg.
+ifeq ($(wildcard $(FFMPEG_BUILD)/libavcodec/libavcodec.a),)
+FFMPEG_BUILD :=
+endif
+
+ifeq ($(strip $(FFMPEG_BUILD)),)
 CFLAGS = -Wall -Wextra -O2 $(shell pkg-config --cflags libavcodec libavformat libavutil)
 LDFLAGS = $(shell pkg-config --libs libavcodec libavformat libavutil)
+else
+CFLAGS = -Wall -Wextra -O2 -I$(FFMPEG_BUILD)
+LDFLAGS = \
+	-L$(FFMPEG_BUILD)/libavformat \
+	-L$(FFMPEG_BUILD)/libavcodec \
+	-L$(FFMPEG_BUILD)/libavutil \
+	-L$(FFMPEG_BUILD)/libswresample \
+	-L$(FFMPEG_BUILD)/libswscale \
+	-Wl,--start-group -lavformat -lavcodec -lavutil -lswresample -lswscale -Wl,--end-group \
+	-pthread -lm -latomic -ldl -lz -llzma -lrga -lrockchip_mpp -ldrm
+endif
 
 TARGET = nv12_to_mjpeg_test
 SOURCES = nv12_to_mjpeg_test.c
