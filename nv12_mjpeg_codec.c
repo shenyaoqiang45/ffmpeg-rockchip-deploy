@@ -91,29 +91,41 @@ NV12MJPEGEncoder* encoder_create(int width, int height, int quality) {
     encoder->codec_ctx->gop_size = 1;  // Every frame is a keyframe (required for MJPEG)
     encoder->codec_ctx->max_b_frames = 0;  // No B-frames for MJPEG
     
-    // Set quality control parameters
+    // Set quality control parameters - use fixed QP mode
+    // 1. Set flag to tell encoder to use fixed quantization parameters
+    encoder->codec_ctx->flags |= AV_CODEC_FLAG_QSCALE;
+    
+    // 2. Set global_quality (critical for quality control)
+    // In FFmpeg, global_quality uses lambda units
+    encoder->codec_ctx->global_quality = quality * FF_QP2LAMBDA;
+    
+    // Print quality parameters for debugging
+    fprintf(stderr, "[Encoder Config] FF_QP2LAMBDA constant: %d\n", FF_QP2LAMBDA);
+    fprintf(stderr, "[Encoder Config] Quality (QP): %d\n", quality);
+    fprintf(stderr, "[Encoder Config] global_quality: %d (QP * FF_QP2LAMBDA = %d * %d)\n", 
+            encoder->codec_ctx->global_quality, quality, FF_QP2LAMBDA);
+    
+    // 3. Very important: for some versions of RKMPP, must manually disable rate control
+    encoder->codec_ctx->bit_rate = 0;
+    encoder->codec_ctx->rc_max_rate = 0;
+    encoder->codec_ctx->rc_buffer_size = 0;
+    
+    fprintf(stderr, "[Encoder Config] Rate control: bit_rate=0, rc_max_rate=0, rc_buffer_size=0\n");
+    
+    // Set quality bounds to match the fixed QP
     encoder->codec_ctx->qmin = quality;
     encoder->codec_ctx->qmax = quality;
     
-    // Calculate bitrate based on quality
-    int64_t target_bitrate;
-    if (quality <= 5) {
-        target_bitrate = 80000000;  // 80 Mbps for extremely high quality
-    } else if (quality <= 10) {
-        target_bitrate = 40000000;  // 40 Mbps for high quality
-    } else if (quality <= 20) {
-        target_bitrate = 20000000;  // 20 Mbps for medium quality
-    } else {
-        target_bitrate = 10000000;  // 10 Mbps for low quality
-    }
-    encoder->codec_ctx->bit_rate = target_bitrate;
-    encoder->codec_ctx->rc_max_rate = target_bitrate;
-    encoder->codec_ctx->rc_buffer_size = target_bitrate * 2;
+    fprintf(stderr, "[Encoder Config] Quality bounds: qmin=%d, qmax=%d\n", 
+            encoder->codec_ctx->qmin, encoder->codec_ctx->qmax);
     
     // Set hardware encoder options for Rockchip MPP
     av_opt_set_int(encoder->codec_ctx->priv_data, "qp_init", quality, 0);
     av_opt_set_int(encoder->codec_ctx->priv_data, "qp_min", quality, 0);
     av_opt_set_int(encoder->codec_ctx->priv_data, "qp_max", quality, 0);
+    
+    fprintf(stderr, "[Encoder Config] Hardware encoder options: qp_init=%d, qp_min=%d, qp_max=%d\n",
+            quality, quality, quality);
     
     // Open codec (expensive operation - done once)
     ret = avcodec_open2(encoder->codec_ctx, encoder->codec, NULL);
@@ -122,6 +134,18 @@ NV12MJPEGEncoder* encoder_create(int width, int height, int quality) {
         avcodec_free_context(&encoder->codec_ctx);
         free(encoder);
         return NULL;
+    }
+    
+    // Print actual effective settings after codec is opened
+    if (ret >= 0) {
+        fprintf(stderr, "[Encoder Config] === After avcodec_open2() ===\n");
+        fprintf(stderr, "[Encoder Config] Actual effective bit_rate: %ld bps\n", encoder->codec_ctx->bit_rate);
+        fprintf(stderr, "[Encoder Config] Actual effective global_quality: %d\n", encoder->codec_ctx->global_quality);
+        fprintf(stderr, "[Encoder Config] Actual effective QScale: %d (global_quality / FF_QP2LAMBDA = %d / %d)\n", 
+                encoder->codec_ctx->global_quality / FF_QP2LAMBDA, 
+                encoder->codec_ctx->global_quality, FF_QP2LAMBDA);
+        fprintf(stderr, "[Encoder Config] Actual effective qmin: %d, qmax: %d\n",
+                encoder->codec_ctx->qmin, encoder->codec_ctx->qmax);
     }
     
     // Allocate frame
