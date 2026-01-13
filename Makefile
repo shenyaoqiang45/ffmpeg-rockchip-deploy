@@ -33,22 +33,40 @@ LDFLAGS = \
 endif
 
 TARGET = nv12_to_mjpeg_test
+TARGET2 = codec_benchmark
+LIBNAME = libnv12_mjpeg_codec.a
+
 SOURCES = nv12_to_mjpeg_test.c
+SOURCES2 = codec_benchmark.c
+LIB_SOURCES = nv12_mjpeg_codec.c
+
 OBJECTS = $(SOURCES:.c=.o)
+OBJECTS2 = $(SOURCES2:.c=.o)
+LIB_OBJECTS = $(LIB_SOURCES:.c=.o)
 
 .PHONY: all clean help install
 
-all: $(TARGET)
+all: $(TARGET) $(TARGET2)
 
 $(TARGET): $(OBJECTS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 	@echo "Build successful: $(TARGET)"
 
+# Static library for codec functions
+$(LIBNAME): $(LIB_OBJECTS)
+	ar rcs $@ $^
+	@echo "Static library built: $(LIBNAME)"
+
+# Benchmark program links against the static library
+$(TARGET2): $(OBJECTS2) $(LIBNAME)
+	$(CC) -o $@ $(OBJECTS2) $(LIBNAME) $(LDFLAGS)
+	@echo "Build successful: $(TARGET2)"
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -f $(OBJECTS) $(OBJECTS2) $(LIB_OBJECTS) $(TARGET) $(TARGET2) $(LIBNAME)
 	@echo "Clean complete"
 
 help:
@@ -58,18 +76,27 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all      - Build the test program (default)"
+	@echo "  all      - Build all test programs and library (default)"
 	@echo "  clean    - Remove build artifacts"
 	@echo "  help     - Display this help message"
-	@echo "  install  - Install the test program to /usr/local/bin"
+	@echo "  install  - Install the test programs to /usr/local/bin"
+	@echo ""
+	@echo "Programs:"
+	@echo "  nv12_to_mjpeg_test - Multi-frame encoding test"
+	@echo "  codec_benchmark    - Single-frame encode/decode benchmark (uses libnv12_mjpeg_codec.a)"
+	@echo ""
+	@echo "Library:"
+	@echo "  libnv12_mjpeg_codec.a - Static library with codec functions"
 	@echo ""
 	@echo "Example:"
 	@echo "  make"
+	@echo "  ./codec_benchmark"
 	@echo "  ./nv12_to_mjpeg_test 1920 1080 30 output.mjpeg"
 
-install: $(TARGET)
+install: $(TARGET) $(TARGET2)
 	install -D -m 755 $(TARGET) /usr/local/bin/$(TARGET)
-	@echo "Installation complete: /usr/local/bin/$(TARGET)"
+	install -D -m 755 $(TARGET2) /usr/local/bin/$(TARGET2)
+	@echo "Installation complete: /usr/local/bin/$(TARGET) and /usr/local/bin/$(TARGET2)"
 
 # Check dependencies
 check-deps:
